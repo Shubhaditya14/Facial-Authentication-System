@@ -1,7 +1,8 @@
 # Project-specific
 claude.md
 projectstate.md
-prompt.md
+prompt*.md
+*prompt*.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
