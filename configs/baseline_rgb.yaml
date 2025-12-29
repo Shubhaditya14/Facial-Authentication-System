@@ -1,0 +1,85 @@
+# Baseline RGB-only FAS Configuration
+# Multi-Modal Face Anti-Spoofing for Banking/KYC
+
+experiment:
+  name: "baseline_rgb"
+  seed: 42
+  output_dir: "experiments"
+  log_dir: "logs"
+
+model:
+  backbone: "resnet18"
+  pretrained: true
+  num_classes: 2
+  dropout: 0.5
+  embedding_dim: 512
+
+data:
+  dataset_name: "casia_surf"
+  data_root: "data/datasets/casia_surf"
+  modalities: ["rgb"]
+  img_size: 224
+  protocol: 1
+
+  # DataLoader
+  batch_size: 32
+  num_workers: 4
+  pin_memory: true
+
+  # Augmentation
+  augmentation:
+    horizontal_flip: true
+    rotation: 10
+    brightness: 0.2
+    contrast: 0.2
+    saturation: 0.2
+    hue: 0.1
+    gaussian_noise: 0.02
+
+training:
+  epochs: 50
+  optimizer:
+    name: "adam"
+    lr: 0.001
+    weight_decay: 0.0001
+
+  scheduler:
+    name: "cosine"
+    warmup_epochs: 5
+    min_lr: 0.00001
+
+  # Loss
+  loss:
+    name: "cross_entropy"
+    label_smoothing: 0.1
+
+  # Gradient
+  gradient_clip: 1.0
+  accumulation_steps: 1
+
+  # Early stopping
+  early_stopping:
+    patience: 10
+    metric: "acer"
+    mode: "min"
+
+  # Checkpointing
+  checkpoint:
+    save_best: true
+    save_last: true
+    save_every: 5
+
+evaluation:
+  threshold: 0.5
+  metrics: ["acer", "apcer", "bpcer", "eer", "auc", "hter"]
+
+logging:
+  use_tensorboard: true
+  use_wandb: false
+  wandb_project: "face-antispoofing"
+  log_every: 10
+
+face_detection:
+  backend: "mediapipe"
+  min_confidence: 0.5
+  margin: 0.2
