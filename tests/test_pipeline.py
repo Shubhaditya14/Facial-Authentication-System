@@ -18,7 +18,7 @@ def test_config():
 
     # Test Config wrapper
     cfg = Config(config)
-    assert cfg.model.backbone == "resnet18"
+    assert cfg.model.backbone_rgb == "mobilenetv3_large"
     assert cfg.data.img_size == 224
     print("✓ Config dot notation works")
 
@@ -259,6 +259,262 @@ def test_logging():
         print("✓ ExperimentLogger works")
 
 
+def test_backbone():
+    """Test backbone wrapper and factory function."""
+    from models.backbones.backbone import get_backbone
+    import torch
+    
+    backbone, dim = get_backbone("mobilenetv3_large", pretrained=False, in_channels=3)
+    x = torch.randn(2, 3, 224, 224)
+    out = backbone(x)
+    assert out.shape == (2, dim), f"Expected (2, {dim}), got {out.shape}"
+    print(f"✓ RGB backbone works - output dim: {dim}")
+    
+    backbone, dim = get_backbone("mobilenetv3_small", pretrained=False, in_channels=1)
+    x = torch.randn(2, 1, 224, 224)
+    out = backbone(x)
+    assert out.shape == (2, dim), f"Expected (2, {dim}), got {out.shape}"
+    print(f"✓ Depth backbone works - output dim: {dim}")
+
+
+def test_fusion():
+    """Test late fusion module."""
+    from models.fusion.fusion import LateFusion
+    import torch
+    
+    feature_dims = {"rgb": 960, "depth": 576, "ir": 576}
+    fusion = LateFusion(feature_dims)
+    
+    features = {
+        "rgb": torch.randn(2, 960),
+        "depth": torch.randn(2, 576),
+        "ir": torch.randn(2, 576),
+    }
+    out = fusion(features)
+    assert out.shape == (2, 2112), f"Expected (2, 2112), got {out.shape}"
+    print("✓ Fusion with all modalities works")
+    
+    features = {"rgb": torch.randn(2, 960), "depth": None, "ir": None}
+    out = fusion(features)
+    assert out.shape == (2, 960), f"Expected (2, 960), got {out.shape}"
+    print("✓ Fusion with RGB only works")
+
+
+def test_head():
+    """Test classification head."""
+    from models.heads.classification import ClassificationHead
+    import torch
+    
+    head = ClassificationHead(
+        in_features=2112,
+        embedding_dim=256,
+        use_auxiliary_depth=True,
+        depth_map_size=14,
+    )
+    
+    x = torch.randn(2, 2112)
+    out = head(x)
+    
+    assert out["logits"].shape == (2, 1)
+    assert out["embedding"].shape == (2, 256)
+    assert out["depth_map"].shape == (2, 1, 14, 14)
+    print("✓ Classification head works")
+
+
+def test_full_model():
+    """Test full multi-modal FAS model."""
+    from models.fas_model import create_model
+    import torch
+    
+    config = {
+        "backbone_rgb": "mobilenetv3_large",
+        "backbone_depth": "mobilenetv3_small",
+        "backbone_ir": "mobilenetv3_small",
+        "pretrained": False,
+        "fusion_type": "late",
+        "embedding_dim": 256,
+        "dropout": 0.2,
+        "use_auxiliary_depth": True,
+        "depth_map_size": 14,
+    }
+    
+    model = create_model(config)
+    
+    rgb = torch.randn(2, 3, 224, 224)
+    depth = torch.randn(2, 1, 224, 224)
+    ir = torch.randn(2, 1, 224, 224)
+    
+    out = model(rgb=rgb, depth=depth, ir=ir)
+    assert out["logits"].shape == (2, 1)
+    assert out["score"].shape == (2, 1)
+    assert out["embedding"].shape == (2, 256)
+    assert out["depth_map"].shape == (2, 1, 14, 14)
+    print("✓ Full model with all modalities works")
+    
+    out = model(rgb=rgb)
+    assert out["logits"].shape == (2, 1)
+    print("✓ Full model with RGB only works")
+    
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"✓ Total parameters: {total_params:,}")
+    print(f"✓ Trainable parameters: {trainable_params:,}")
+
+
+def test_model_with_dataloader():
+    """Test model with batch dict from dataloader."""
+    from models.fas_model import create_model
+    import torch
+    
+    config = {
+        "backbone_rgb": "mobilenetv3_large",
+        "backbone_depth": "mobilenetv3_small", 
+        "backbone_ir": "mobilenetv3_small",
+        "pretrained": False,
+        "fusion_type": "late",
+        "embedding_dim": 256,
+        "dropout": 0.2,
+        "use_auxiliary_depth": True,
+        "depth_map_size": 14,
+    }
+    
+    model = create_model(config)
+    
+    batch = {
+        "rgb": torch.randn(4, 3, 224, 224),
+        "depth": torch.randn(4, 1, 224, 224),
+        "ir": None,
+        "label": torch.tensor([1, 0, 1, 0], dtype=torch.float32),
+    }
+    
+    out = model.forward_dict(batch)
+    assert out["logits"].shape == (4, 1)
+    print("✓ Model with dataloader batch works")
+
+
+def test_losses():
+    """Test loss functions."""
+    from training.losses import FASLoss
+    import torch
+    
+    criterion = FASLoss(
+        bce_weight=1.0,
+        depth_weight=0.5,
+        contrastive_weight=0.1,
+    )
+    
+    outputs = {
+        "logits": torch.randn(4, 1),
+        "depth_map": torch.randn(4, 1, 14, 14),
+        "embedding": torch.randn(4, 256),
+    }
+    
+    targets = {
+        "label": torch.tensor([1, 0, 1, 0], dtype=torch.float32),
+        "depth": None,
+    }
+    
+    losses = criterion(outputs, targets)
+    
+    assert "total" in losses
+    assert "bce" in losses
+    assert "depth" in losses
+    assert "contrastive" in losses
+    assert losses["total"].requires_grad
+    print(f"✓ Losses work - Total: {losses['total'].item():.4f}")
+
+
+def test_callbacks():
+    """Test callbacks."""
+    from training.callbacks import EarlyStopping, ModelCheckpoint
+    import torch
+    import torch.nn as nn
+    import tempfile
+    
+    es = EarlyStopping(patience=3, mode="min")
+    assert not es(0.5)
+    assert not es(0.4)
+    assert not es(0.45)
+    assert not es(0.46)
+    assert not es(0.47)
+    assert es(0.48)
+    print("✓ EarlyStopping works")
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ckpt = ModelCheckpoint(save_dir=tmpdir, monitor="val_acer", mode="min")
+        model = nn.Linear(10, 1)
+        optimizer = torch.optim.Adam(model.parameters())
+        
+        path = ckpt.save(model, optimizer, epoch=0, metrics={"val_acer": 0.5})
+        assert path is not None
+        print("✓ ModelCheckpoint works")
+
+
+def test_trainer_init():
+    """Test trainer initialization and training loop."""
+    from training.trainer import Trainer
+    from models.fas_model import create_model
+    import torch
+    from torch.utils.data import DataLoader, TensorDataset
+    
+    config_model = {
+        "backbone_rgb": "mobilenetv3_small",
+        "backbone_depth": "mobilenetv3_small",
+        "backbone_ir": "mobilenetv3_small",
+        "pretrained": False,
+        "fusion_type": "late",
+        "embedding_dim": 128,
+        "dropout": 0.2,
+        "use_auxiliary_depth": True,
+        "depth_map_size": 14,
+    }
+    model = create_model(config_model)
+    
+    dummy_data = TensorDataset(
+        torch.randn(16, 3, 224, 224),
+        torch.randint(0, 2, (16,)).float(),
+    )
+    
+    def collate_fn(batch):
+        rgb, labels = zip(*batch)
+        return {
+            "rgb": torch.stack(rgb),
+            "depth": None,
+            "ir": None,
+            "label": torch.stack(labels),
+        }
+    
+    train_loader = DataLoader(dummy_data, batch_size=4, collate_fn=collate_fn)
+    val_loader = DataLoader(dummy_data, batch_size=4, collate_fn=collate_fn)
+    
+    config_train = {
+        "device": "cpu",
+        "mixed_precision": False,
+        "epochs": 2,
+        "lr": 0.001,
+        "optimizer": "adamw",
+        "scheduler": "cosine",
+        "output_dir": "outputs/test",
+        "patience": 5,
+        "gradient_accumulation_steps": 1,
+        "bce_weight": 1.0,
+        "depth_weight": 0.0,  # Disable depth loss for this test
+        "contrastive_weight": 0.0,  # Disable contrastive loss
+    }
+    
+    trainer = Trainer(model, train_loader, val_loader, config_train)
+    print("✓ Trainer initialization works")
+    
+    train_metrics = trainer.train_epoch()
+    val_metrics = trainer.validate()
+    
+    assert "loss" in train_metrics
+    assert "acer" in train_metrics
+    assert "loss" in val_metrics
+    assert "acer" in val_metrics
+    print(f"✓ Training epoch works - Train ACER: {train_metrics['acer']:.4f}, Val ACER: {val_metrics['acer']:.4f}")
+
+
 def run_all_tests():
     """Run all tests."""
     print("\n" + "=" * 50)
@@ -274,6 +530,14 @@ def run_all_tests():
         ("Dataset", test_dataset_mock),
         ("DataLoader", test_dataloader),
         ("Logging", test_logging),
+        ("Backbone", test_backbone),
+        ("Fusion", test_fusion),
+        ("Head", test_head),
+        ("Full Model", test_full_model),
+        ("Model with DataLoader", test_model_with_dataloader),
+        ("Losses", test_losses),
+        ("Callbacks", test_callbacks),
+        ("Trainer", test_trainer_init),
     ]
 
     passed = 0
