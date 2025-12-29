@@ -15,6 +15,50 @@ from data.transforms import get_train_transforms, get_val_transforms
 from utils.seed import worker_init_fn
 
 
+def collate_multimodal(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Custom collate function for multi-modal batches.
+
+    Handles batches where some modalities might be None for certain samples.
+
+    Args:
+        batch: List of sample dictionaries.
+
+    Returns:
+        Collated batch dictionary with stacked tensors.
+    """
+    result = {}
+
+    # Get all keys from first sample
+    keys = batch[0].keys()
+
+    for key in keys:
+        if key == "meta":
+            # Handle metadata separately
+            result["meta"] = {
+                meta_key: [sample["meta"][meta_key] for sample in batch]
+                for meta_key in batch[0]["meta"].keys()
+            }
+        elif key in ["rgb", "depth", "ir"]:
+            # Stack tensors, handling None values
+            values = [sample[key] for sample in batch]
+            if all(v is not None for v in values):
+                result[key] = torch.stack(values)
+            else:
+                result[key] = None
+        elif key == "label":
+            # Stack labels
+            result["label"] = torch.stack([sample["label"] for sample in batch])
+        else:
+            # Generic handling
+            values = [sample[key] for sample in batch]
+            if isinstance(values[0], torch.Tensor):
+                result[key] = torch.stack(values)
+            else:
+                result[key] = values
+
+    return result
+
+
 def create_dataloaders(
     config: Dict[str, Any],
     face_detector: Optional[FaceDetector] = None,
@@ -94,7 +138,7 @@ def create_dataloaders(
         dataset_name=dataset_name,
     )
 
-    # Create dataloaders
+    # Create dataloaders with custom collate function for multi-modal support
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -103,6 +147,7 @@ def create_dataloaders(
         pin_memory=pin_memory,
         worker_init_fn=worker_init_fn,
         drop_last=True,
+        collate_fn=collate_multimodal,
     )
 
     val_loader = DataLoader(
@@ -113,6 +158,7 @@ def create_dataloaders(
         pin_memory=pin_memory,
         worker_init_fn=worker_init_fn,
         drop_last=False,
+        collate_fn=collate_multimodal,
     )
 
     test_loader = DataLoader(
@@ -123,6 +169,7 @@ def create_dataloaders(
         pin_memory=pin_memory,
         worker_init_fn=worker_init_fn,
         drop_last=False,
+        collate_fn=collate_multimodal,
     )
 
     return train_loader, val_loader, test_loader
@@ -184,7 +231,7 @@ def create_single_dataloader(
         dataset_name=dataset_name,
     )
 
-    # Create dataloader
+    # Create dataloader with custom collate function for multi-modal support
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -193,53 +240,10 @@ def create_single_dataloader(
         pin_memory=pin_memory,
         worker_init_fn=worker_init_fn,
         drop_last=(split == "train"),
+        collate_fn=collate_multimodal,
     )
 
     return loader
-
-
-def collate_multimodal(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Custom collate function for multi-modal batches.
-
-    Handles batches where some modalities might be None for certain samples.
-
-    Args:
-        batch: List of sample dictionaries.
-
-    Returns:
-        Collated batch dictionary with stacked tensors.
-    """
-    result = {}
-
-    # Get all keys from first sample
-    keys = batch[0].keys()
-
-    for key in keys:
-        if key == "meta":
-            # Handle metadata separately
-            result["meta"] = {
-                meta_key: [sample["meta"][meta_key] for sample in batch]
-                for meta_key in batch[0]["meta"].keys()
-            }
-        elif key in ["rgb", "depth", "ir"]:
-            # Stack tensors, handling None values
-            values = [sample[key] for sample in batch]
-            if all(v is not None for v in values):
-                result[key] = torch.stack(values)
-            else:
-                result[key] = None
-        elif key == "label":
-            # Stack labels
-            result["label"] = torch.stack([sample["label"] for sample in batch])
-        else:
-            # Generic handling
-            values = [sample[key] for sample in batch]
-            if isinstance(values[0], torch.Tensor):
-                result[key] = torch.stack(values)
-            else:
-                result[key] = values
-
-    return result
 
 
 class InfiniteDataLoader:

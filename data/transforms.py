@@ -52,7 +52,7 @@ def get_train_transforms(
             min_height=img_size,
             min_width=img_size,
             border_mode=0,
-            value=(0, 0, 0),
+            fill=0,
         ),
         # Center crop to exact size
         A.CenterCrop(height=img_size, width=img_size),
@@ -95,7 +95,7 @@ def get_train_transforms(
     if gaussian_noise > 0:
         transforms.append(
             A.GaussNoise(
-                var_limit=(0, gaussian_noise * 255),
+                std_range=(0, gaussian_noise),
                 p=0.3,
             )
         )
@@ -124,7 +124,7 @@ def get_val_transforms(img_size: int = 224) -> A.Compose:
             min_height=img_size,
             min_width=img_size,
             border_mode=0,
-            value=(0, 0, 0),
+            fill=0,
         ),
         A.CenterCrop(height=img_size, width=img_size),
         A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
@@ -166,7 +166,7 @@ def get_multimodal_transforms(
             min_height=img_size,
             min_width=img_size,
             border_mode=0,
-            value=0,  # Scalar for grayscale compatibility
+            fill=0,  # Scalar for grayscale compatibility
         ),
         A.CenterCrop(height=img_size, width=img_size),
     ]

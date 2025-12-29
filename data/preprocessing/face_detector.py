@@ -60,15 +60,54 @@ class FaceDetector:
         try:
             import mediapipe as mp
 
-            self._mp_face_detection = mp.solutions.face_detection
-            self._detector = self._mp_face_detection.FaceDetection(
-                min_detection_confidence=self.min_confidence,
-                model_selection=model_selection,
-            )
-        except ImportError:
-            raise ImportError(
-                "MediaPipe not installed. Install with: pip install mediapipe"
-            )
+            # Try new API first (mediapipe >= 0.10.8)
+            if hasattr(mp, "tasks"):
+                from mediapipe.tasks import python as mp_python
+                from mediapipe.tasks.python import vision
+
+                # Use the new FaceDetector API
+                base_options = mp_python.BaseOptions(
+                    model_asset_path=self._get_model_path()
+                )
+                options = vision.FaceDetectorOptions(
+                    base_options=base_options,
+                    min_detection_confidence=self.min_confidence,
+                )
+                self._detector = vision.FaceDetector.create_from_options(options)
+                self._use_new_api = True
+            else:
+                # Fall back to legacy API
+                self._mp_face_detection = mp.solutions.face_detection
+                self._detector = self._mp_face_detection.FaceDetection(
+                    min_detection_confidence=self.min_confidence,
+                    model_selection=model_selection,
+                )
+                self._use_new_api = False
+        except (ImportError, AttributeError, Exception) as e:
+            # If MediaPipe fails, fall back to OpenCV
+            import warnings
+            warnings.warn(f"MediaPipe initialization failed: {e}. Falling back to OpenCV.")
+            self.backend = "opencv"
+            self._init_opencv()
+
+    def _get_model_path(self) -> str:
+        """Get the path to MediaPipe face detection model."""
+        import mediapipe as mp
+        import os
+
+        # Try to find the model in the mediapipe package
+        mp_path = os.path.dirname(mp.__file__)
+        model_paths = [
+            os.path.join(mp_path, "modules", "face_detection", "face_detection_short_range.tflite"),
+            os.path.join(mp_path, "modules", "face_detection", "face_detection_full_range.tflite"),
+        ]
+
+        for path in model_paths:
+            if os.path.exists(path):
+                return path
+
+        # Return empty string to let MediaPipe use its default
+        return ""
 
     def _init_opencv(self) -> None:
         """Initialize OpenCV Haar Cascade face detection."""
@@ -113,18 +152,20 @@ class FaceDetector:
             rgb_image = image
 
         h, w = image.shape[:2]
-        results = self._detector.process(rgb_image)
-
         detections = []
-        if results.detections:
-            for detection in results.detections:
-                bbox_rel = detection.location_data.relative_bounding_box
 
-                # Convert relative to absolute coordinates
-                x = int(bbox_rel.xmin * w)
-                y = int(bbox_rel.ymin * h)
-                box_w = int(bbox_rel.width * w)
-                box_h = int(bbox_rel.height * h)
+        if getattr(self, "_use_new_api", False):
+            # New MediaPipe Tasks API
+            import mediapipe as mp
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_image)
+            results = self._detector.detect(mp_image)
+
+            for detection in results.detections:
+                bbox = detection.bounding_box
+                x = bbox.origin_x
+                y = bbox.origin_y
+                box_w = bbox.width
+                box_h = bbox.height
 
                 # Clamp to image bounds
                 x = max(0, x)
@@ -132,10 +173,36 @@ class FaceDetector:
                 box_w = min(box_w, w - x)
                 box_h = min(box_h, h - y)
 
+                confidence = detection.categories[0].score if detection.categories else 0.0
+
                 detections.append({
-                    "bbox": (x, y, box_w, box_h),
-                    "confidence": detection.score[0] if detection.score else 0.0,
+                    "bbox": (int(x), int(y), int(box_w), int(box_h)),
+                    "confidence": confidence,
                 })
+        else:
+            # Legacy API
+            results = self._detector.process(rgb_image)
+
+            if results.detections:
+                for detection in results.detections:
+                    bbox_rel = detection.location_data.relative_bounding_box
+
+                    # Convert relative to absolute coordinates
+                    x = int(bbox_rel.xmin * w)
+                    y = int(bbox_rel.ymin * h)
+                    box_w = int(bbox_rel.width * w)
+                    box_h = int(bbox_rel.height * h)
+
+                    # Clamp to image bounds
+                    x = max(0, x)
+                    y = max(0, y)
+                    box_w = min(box_w, w - x)
+                    box_h = min(box_h, h - y)
+
+                    detections.append({
+                        "bbox": (x, y, box_w, box_h),
+                        "confidence": detection.score[0] if detection.score else 0.0,
+                    })
 
         return detections
 
@@ -351,7 +418,11 @@ class FaceDetector:
     def close(self) -> None:
         """Release detector resources."""
         if self.backend == "mediapipe" and self._detector:
-            self._detector.close()
+            if hasattr(self._detector, "close"):
+                try:
+                    self._detector.close()
+                except Exception:
+                    pass
         self._detector = None
 
     def __enter__(self) -> "FaceDetector":
